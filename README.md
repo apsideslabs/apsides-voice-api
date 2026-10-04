@@ -178,9 +178,9 @@ All settings are environment variables — see `.env.example`. Key ones:
 - **No secrets in the repo:** the API key comes from the environment only.
 - **No compiler needed:** the native runtime ships inside the
   `transcribe-cpp-native` wheel that `pip install transcribe-cpp` pulls in.
-- **Fits a 2 GB host:** deps ~515 MB, models ~303 MB, peak RAM ~620 MB. English
-  G2P uses misaki's espeak-ng front-end — deliberately *not* `misaki[en]`, which
-  would drag in spacy + torch + CUDA wheels (~5.9 GB).
+- **Fits a 2 GB host on Python 3.13:** deps ~515 MB, models ~303 MB, peak RAM
+  ~620 MB. English G2P is self-contained (phonemizer + espeak-ng) — no `misaki`,
+  which requires Python <3.13 and would drag in spacy + torch (~5.9 GB).
 
 ## License
 

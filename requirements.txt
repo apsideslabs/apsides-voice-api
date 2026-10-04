@@ -15,20 +15,16 @@ scipy>=1.11                      # resampling for the 16 kHz STT front-end
 # (1.19.x) rejects and some much newer builds crash on. 1.20-1.22 verified.
 onnxruntime>=1.20,<1.23          # CPU inference
 
-# Lightweight English G2P = misaki's espeak-ng front-end (no spacy, no torch).
-# DO NOT use `misaki[en]` here: it pulls spacy -> spacy-curated-transformers ->
-# torch + CUDA wheels (~5.9 GB installed), which does not fit a 2 GB host.
-# The TTS engine auto-uses misaki.en only if spacy happens to be installed.
-misaki>=0.8
+# Lightweight English G2P: espeak-ng via phonemizer (pure-python wheels).
+# NO misaki: every release requires Python <3.13 (this host runs 3.13), and
+# `misaki[en]` additionally pulls spacy -> torch + CUDA wheels (~5.9 GB).
 phonemizer-fork>=3.2
 espeakng-loader>=0.2
-num2words>=0.5
 
 # --- STT runtime (Moonshine Streaming Small Q8_0 via transcribe.cpp) --------
-# Pure-Python binding; the prebuilt native bundle (libtranscribe.so) is
-# downloaded by scripts/download_models.py — no compiler needed.
-# Pinned: the binding validates the native bundle's version + ABI hash, so keep
-# this in sync with TRANSCRIBE_VERSION (default 0.3.0).
+# Pure-Python binding; the prebuilt native libtranscribe.so ships in the
+# transcribe-cpp-native wheel (installed automatically) — no compiler needed.
+# Pinned: the binding validates the native bundle's version + ABI hash.
 transcribe-cpp==0.3.0
 
 # --- Model downloads -------------------------------------------------------

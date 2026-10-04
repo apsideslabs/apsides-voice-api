@@ -85,6 +85,15 @@ class Settings(BaseSettings):
             return ["*"]
         return [o.strip() for o in raw.split(",") if o.strip()]
 
+    @property
+    def effective_port(self) -> int:
+        """Pterodactyl/Botkeep inject SERVER_PORT; other hosts use PORT."""
+        for key in ("SERVER_PORT", "PORT"):
+            raw = os.environ.get(key)
+            if raw and str(raw).strip().isdigit():
+                return int(raw)
+        return self.port
+
     # Resolved paths ----------------------------------------------------
     @property
     def resolved_tts_model_path(self) -> str:

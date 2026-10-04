@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 export MODEL_DIR="${MODEL_DIR:-./models}"
-export PORT="${PORT:-8000}"
+export PORT="${SERVER_PORT:-${PORT:-8000}}"
 export STT_BACKEND="${STT_BACKEND:-transcribe_cpp}"
 
 # --- Fetch models once (idempotent) ---------------------------------------

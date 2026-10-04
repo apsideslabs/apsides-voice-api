@@ -29,7 +29,7 @@ Everything below assumes a public port **is** provided and that `$PORT` is set.
 | --- | --- |
 | **Source** | Connect the GitHub repo `apsideslabs/apsides-voice-api` (or upload a ZIP) |
 | **Runtime** | Python |
-| **Python version** | **3.12** (pinned in `runtime.txt`; 3.11 also works) |
+| **Python version** | whatever the host provides — **3.13 verified** (3.11/3.12 also work). `runtime.txt` is advisory; Pterodactyl/Botkeep uses its own image. |
 | **Install / build command** | `pip install -r requirements.txt` |
 | **Start command** | `bash start.sh` |
 | **Model download command** | `python scripts/download_models.py` (run automatically by `start.sh`) |
@@ -71,10 +71,10 @@ Set secrets in Botkeep's secret store — **never** commit them.
   glibc/libstdc++ present; the Vulkan module is optional and is not used.
 - **ffmpeg** is *optional* — install it only if you want to accept MP3/WebM
   uploads. WAV/FLAC/OGG work with the bundled `soundfile` wheel.
-- English G2P uses misaki's **espeak-ng** front-end (no spacy, no torch).
-  Do **not** install `misaki[en]` on a 2 GB host — it pulls spacy →
-  spacy-curated-transformers → torch + CUDA wheels (**~5.9 GB** installed).
-  The engine uses `misaki.en` automatically only if spacy happens to exist.
+- English G2P is self-contained: **phonemizer-fork + espeak-ng** (espeak-ng
+  ships inside the `espeakng-loader` wheel). **No `misaki`** — every misaki
+  release requires Python <3.13 (this host runs 3.13), and its `[en]` extra
+  additionally pulls spacy + torch (~5.9 GB).
 
 ---
 
@@ -189,6 +189,23 @@ const { text } = await (await fetch("https://YOUR-APP/stt", {
 Remember to add your site's origin to `CORS_ORIGINS`.
 
 ---
+
+## Troubleshooting
+
+**`ERROR: No matching distribution found for misaki>=0.8`** — this is what
+broke install on Python 3.13: misaki requires Python <3.13. The requirements no
+longer include misaki at all. If you see this, you are deploying an older
+revision — make sure the latest `requirements.txt` is what gets installed.
+
+**Install succeeds but the app crashes on start** — check the log for the last
+Python traceback. `main.py` is the entrypoint; the models download on first boot.
+
+**`/health` shows a model `ready: false`** — the `detail` field names the cause
+(usually a failed download). Verify outbound network access and that `MODEL_DIR`
+is writable.
+
+**Port** — the app binds `SERVER_PORT` if set, else `PORT`, else `8000`. If the
+host reports a different allocation, set `SERVER_PORT` to match.
 
 ## Portable alternatives (if Botkeep has no HTTP ingress)
 
