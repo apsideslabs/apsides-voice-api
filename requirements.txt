@@ -1,0 +1,21 @@
+# --- Web framework ---------------------------------------------------------
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9          # multipart/form-data (file uploads)
+pydantic>=2.6
+pydantic-settings>=2.2
+
+# --- Numerics / audio ------------------------------------------------------
+numpy>=1.24
+soundfile>=0.12                  # WAV/FLAC/OGG decode + WAV encode (no binaries)
+scipy>=1.11                      # transitive/resample helpers
+
+# --- TTS runtime (Kokoro-82M ONNX, CPU) ------------------------------------
+onnxruntime>=1.17                # CPU inference
+misaki[en]>=0.8                  # English grapheme-to-phoneme front-end
+
+# --- STT runtime (Moonshine Streaming Small) -------------------------------
+moonshine-voice>=0.0.1           # provides `moonshine_voice`
+
+# --- Model downloads -------------------------------------------------------
+huggingface_hub>=0.20
