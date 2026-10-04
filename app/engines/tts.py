@@ -3,15 +3,17 @@
 Uses `onnx-community/Kokoro-82M-v1.0-ONNX` (`model_q8f16.onnx`, ~86 MB) with
 per-voice style tensors (`voices/<name>.bin`).
 
-English G2P is **self-contained**: `phonemizer-fork` + espeak-ng (shipped in the
-`espeakng-loader` wheel). It deliberately does *not* depend on `misaki`, whose
-releases require Python <3.13 (Botkeep runs 3.13) and whose `[en]` extra drags
-in spacy + torch (~5.9 GB). The espeak→Kokoro phoneme mapping is ported from
-misaki's `EspeakFallback` (MIT, https://github.com/hexgrad/misaki) so the phoneme
-inventory matches what Kokoro was trained on.
+English G2P is **self-contained and dependency-light**: we call the espeak-ng
+shared library directly through ``ctypes`` (the library + data ship inside the
+`espeakng-loader` wheel). There is deliberately no `misaki` (its releases need
+Python <3.13, and `misaki[en]` pulls spacy + torch) and no `phonemizer` (it
+drags in `segments` -> `csvw` -> rdflib/jsonschema/babel). The espeak->Kokoro
+phoneme mapping is ported from misaki's `EspeakFallback` (MIT,
+https://github.com/hexgrad/misaki).
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import logging
 import re
@@ -29,59 +31,92 @@ SAMPLE_RATE = 24000
 MAX_TOKENS = 510          # model context is 512 incl. pad tokens
 _CHUNK_CHAR_BUDGET = 300  # conservative split budget so phonemes stay < MAX_TOKENS
 
+# espeak emits diphthongs/affricates as two characters; Kokoro expects them
+# tied (e.g. a^ɪ) so the E2M table below can fold them into a single phoneme.
+_TIES = [
+    ("a\u026a", "a^\u026a"), ("a\u028a", "a^\u028a"), ("e\u026a", "e^\u026a"),
+    ("o\u028a", "o^\u028a"), ("\u0259\u028a", "\u0259^\u028a"), ("\u0254\u026a", "\u0254^\u026a"),
+    ("d\u0292", "d^\u0292"), ("t\u0283", "t^\u0283"),
+]
+
+# espeak IPA -> Kokoro IPA substitutions (ported from misaki, MIT)
+_E2M = sorted(
+    {
+        "\u0294\u02ccn\u0329": "\u0294n", "\u0294n\u0329": "\u0294n",
+        "a^\u026a": "I", "a^\u028a": "W",
+        "d^\u0292": "\u02a4",
+        "e^\u026a": "A", "e": "A",
+        "t^\u0283": "\u02a7",
+        "\u0254^\u026a": "Y",
+        "\u0259^l": "\u1d4al",
+        "\u02b2o": "jo", "\u02b2\u0259": "j\u0259", "\u02b2": "",
+        "\u025a": "\u0259\u0279",
+        "r": "\u0279",
+        "x": "k", "\u00e7": "k",
+        "\u0250": "\u0259",
+        "\u026c": "l",
+        "\u0303": "",
+    }.items(),
+    key=lambda kv: -len(kv[0]),
+)
+
 
 class EspeakG2P:
-    """English grapheme-to-phoneme via espeak-ng, mapped to Kokoro phonemes.
+    """English grapheme-to-phoneme via the espeak-ng shared library (ctypes)."""
 
-    No misaki / spacy / torch. The ``_E2M`` table and post-processing mirror
-    misaki's EspeakFallback (MIT) so the output matches Kokoro's training data.
-    """
-
-    # espeak IPA -> Kokoro IPA substitutions (ported from misaki, MIT)
-    _E2M = sorted(
-        {
-            "\u0294\u02ccn\u0329": "\u0294n", "\u0294n\u0329": "\u0294n",
-            "a^\u026a": "I", "a^\u028a": "W",
-            "d^\u0292": "\u02a4",
-            "e^\u026a": "A", "e": "A",
-            "t^\u0283": "\u02a7",
-            "\u0254^\u026a": "Y",
-            "\u0259^l": "\u1d4al",
-            "\u02b2o": "jo", "\u02b2\u0259": "j\u0259", "\u02b2": "",
-            "\u025a": "\u0259\u0279",
-            "r": "\u0279",
-            "x": "k", "\u00e7": "k",
-            "\u0250": "\u0259",
-            "\u026c": "l",
-            "\u0303": "",
-        }.items(),
-        key=lambda kv: -len(kv[0]),
-    )
+    _lib = None
+    _init_lock = threading.Lock()
 
     def __init__(self, british: bool) -> None:
-        import espeakng_loader
-        from phonemizer.backend import EspeakBackend
-        from phonemizer.backend.espeak.wrapper import EspeakWrapper
-
-        # Point phonemizer at the espeak-ng library/data bundled by the wheel.
-        EspeakWrapper.set_library(espeakng_loader.get_library_path())
-        EspeakWrapper.set_data_path(espeakng_loader.get_data_path())
-
         self._british = british
-        self._backend = EspeakBackend(
-            language=f"en-{'gb' if british else 'us'}",
-            preserve_punctuation=True,
-            with_stress=True,
-            tie="^",
-        )
+        self._voice = b"en-gb" if british else b"en-us"
+        self._ensure_lib()
+
+    @classmethod
+    def _ensure_lib(cls):
+        with cls._init_lock:
+            if cls._lib is not None:
+                return
+            try:
+                import espeakng_loader
+            except Exception as exc:  # noqa: BLE001
+                raise ModelNotReadyError(
+                    "espeak-ng is unavailable. Install `espeakng-loader`."
+                ) from exc
+
+            lib = ctypes.CDLL(espeakng_loader.get_library_path())
+            lib.espeak_Initialize.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_char_p, ctypes.c_int]
+            lib.espeak_Initialize.restype = ctypes.c_int
+            lib.espeak_SetVoiceByName.argtypes = [ctypes.c_char_p]
+            lib.espeak_SetVoiceByName.restype = ctypes.c_int
+            lib.espeak_TextToPhonemes.argtypes = [
+                ctypes.POINTER(ctypes.c_char_p), ctypes.c_int, ctypes.c_int
+            ]
+            lib.espeak_TextToPhonemes.restype = ctypes.c_char_p
+
+            # AUDIO_OUTPUT_RETRIEVAL=1, buflength=0, data path, DONT_EXIT
+            lib.espeak_Initialize(1, 0, espeakng_loader.get_data_path().encode(), 0x8000)
+            cls._lib = lib
+
+    def _phonemize(self, text: str) -> str:
+        lib = type(self)._lib
+        lib.espeak_SetVoiceByName(self._voice)
+        ptr = ctypes.c_char_p(text.encode("utf-8"))
+        parts: List[str] = []
+        while ptr.value:
+            chunk = lib.espeak_TextToPhonemes(ctypes.byref(ptr), 1, 0x02)  # UTF8, IPA
+            if chunk:
+                parts.append(chunk.decode("utf-8"))
+        return " ".join(parts)
 
     def __call__(self, text: str):
-        result = self._backend.phonemize([text])
-        if not result:
+        ps = self._phonemize(text)
+        if not ps:
             return "", None
-        ps = result[0].strip()
-        for old, new in type(self)._E2M:
-            ps = ps.replace(old, new)
+        for a, b in _TIES:
+            ps = ps.replace(a, b)
+        for a, b in _E2M:
+            ps = ps.replace(a, b)
         ps = re.sub(r"(\S)\u0329", "\u1d4a\\1", ps).replace(chr(809), "")
         if self._british:
             ps = ps.replace("e^\u0259", "\u025b\u02d0")
@@ -185,14 +220,10 @@ class KokoroTTS:
         accent = "b" if voice.startswith("b") else "a"
         if accent in self._g2p_cache:
             return self._g2p_cache[accent]
-        british = accent == "b"
         try:
-            g2p = EspeakG2P(british)
+            g2p = EspeakG2P(accent == "b")
         except Exception as exc:  # noqa: BLE001
-            raise ModelNotReadyError(
-                "English G2P is unavailable. Install `phonemizer-fork` and "
-                "`espeakng-loader`."
-            ) from exc
+            raise ModelNotReadyError(f"English G2P is unavailable: {exc}") from exc
         self._g2p_cache[accent] = g2p
         return g2p
 

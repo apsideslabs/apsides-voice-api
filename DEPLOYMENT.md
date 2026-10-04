@@ -71,10 +71,10 @@ Set secrets in Botkeep's secret store — **never** commit them.
   glibc/libstdc++ present; the Vulkan module is optional and is not used.
 - **ffmpeg** is *optional* — install it only if you want to accept MP3/WebM
   uploads. WAV/FLAC/OGG work with the bundled `soundfile` wheel.
-- English G2P is self-contained: **phonemizer-fork + espeak-ng** (espeak-ng
-  ships inside the `espeakng-loader` wheel). **No `misaki`** — every misaki
-  release requires Python <3.13 (this host runs 3.13), and its `[en]` extra
-  additionally pulls spacy + torch (~5.9 GB).
+- English G2P is self-contained: **espeak-ng called directly via `ctypes`** (the
+  library + data ship inside the `espeakng-loader` wheel). **No `misaki`** (needs
+  Python <3.13; pulls spacy + torch) and **no `phonemizer-fork`** (it drags in
+  `segments` → `csvw` → rdflib/jsonschema/babel, which exhausted the host disk).
 
 ---
 
@@ -111,8 +111,8 @@ once. **Confirm which applies to your plan.**
 | Resource | Estimate | Against Botkeep Founder Free |
 | --- | --- | --- |
 | Model files on disk | ~303 MB (Kokoro ~114 + GGUF ~189) | ✅ within 2 GB |
-| Python deps installed | ~515 MB (measured; onnxruntime + numpy + scipy dominate) | ✅ |
-| **Storage total** | **~0.8–0.9 GB** (515 MB deps + ~303 MB models) | ✅ within 2 GB |
+| Python deps installed | ~308 MB (measured; sympy + transcribe-cpp-native + onnxruntime + numpy dominate) | ✅ |
+| **Storage total** | **~0.6 GB** (308 MB deps + ~303 MB models), plus ~150 MB of pip download cache during install | ⚠️ needs ~1 GB free |
 | **RAM at runtime** | **~620 MB measured** peak RSS, both models loaded *and* run | ✅ within 2 GB |
 | CPU | 1–2 threads | ✅ within 1.5 vCore |
 
@@ -196,6 +196,13 @@ Remember to add your site's origin to `CORS_ORIGINS`.
 broke install on Python 3.13: misaki requires Python <3.13. The requirements no
 longer include misaki at all. If you see this, you are deploying an older
 revision — make sure the latest `requirements.txt` is what gets installed.
+
+**`OSError: [Errno 28] No space left on device`** — pip ran out of disk. The
+slim requirements install to ~308 MB, but pip also downloads ~150 MB of wheels
+first, and the models add ~303 MB. Check the plan's disk allocation and clear
+any stale pip cache on the server. If it is still tight: set
+`STT_ENABLED=false` (drops ~61 MB of native libs + the 189 MB GGUF), or switch
+the STT model to `moonshine-streaming-tiny` (48 MB GGUF).
 
 **Install succeeds but the app crashes on start** — check the log for the last
 Python traceback. `main.py` is the entrypoint; the models download on first boot.

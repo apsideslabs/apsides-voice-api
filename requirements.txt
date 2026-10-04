@@ -1,24 +1,23 @@
 # --- Web framework ---------------------------------------------------------
 fastapi>=0.110
-uvicorn[standard]>=0.27
-python-multipart>=0.0.9          # multipart/form-data (file uploads)
+uvicorn>=0.27                   # plain (not [standard]) to keep the install small
+python-multipart>=0.0.9         # multipart/form-data (file uploads)
 pydantic>=2.6
 pydantic-settings>=2.2
 
 # --- Numerics / audio ------------------------------------------------------
 numpy>=1.24
-soundfile>=0.12                  # WAV/FLAC/OGG decode + WAV encode (no binaries)
-scipy>=1.11                      # resampling for the 16 kHz STT front-end
+soundfile>=0.12                 # WAV/FLAC/OGG decode + WAV encode (no binaries)
 
 # --- TTS runtime (Kokoro-82M ONNX, CPU) ------------------------------------
 # Pinned range: the Kokoro q8f16 graph uses ConvInteger, which older ORT
 # (1.19.x) rejects and some much newer builds crash on. 1.20-1.22 verified.
-onnxruntime>=1.20,<1.23          # CPU inference
+onnxruntime>=1.20,<1.23         # CPU inference
 
-# Lightweight English G2P: espeak-ng via phonemizer (pure-python wheels).
-# NO misaki: every release requires Python <3.13 (this host runs 3.13), and
-# `misaki[en]` additionally pulls spacy -> torch + CUDA wheels (~5.9 GB).
-phonemizer-fork>=3.2
+# English G2P = espeak-ng, called directly via ctypes. The library + data ship
+# in this wheel. We intentionally avoid misaki (needs Python <3.13; pulls
+# spacy+torch) and phonemizer-fork (pulls segments->csvw->rdflib/jsonschema/babel,
+# which exhausted the host's disk).
 espeakng-loader>=0.2
 
 # --- STT runtime (Moonshine Streaming Small Q8_0 via transcribe.cpp) --------
@@ -26,6 +25,3 @@ espeakng-loader>=0.2
 # transcribe-cpp-native wheel (installed automatically) — no compiler needed.
 # Pinned: the binding validates the native bundle's version + ABI hash.
 transcribe-cpp==0.3.0
-
-# --- Model downloads -------------------------------------------------------
-huggingface_hub>=0.20

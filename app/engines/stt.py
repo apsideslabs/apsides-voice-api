@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from math import gcd
 from pathlib import Path
 from typing import Optional
 
@@ -37,15 +36,22 @@ _ARCH_NAMES = {
 
 
 def _resample_to_16k(samples: np.ndarray, sr: int) -> np.ndarray:
-    """transcribe.cpp wants mono 16 kHz float32; moonshine-voice accepts any SR."""
-    x = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
-    if sr == TARGET_SR or sr <= 0:
-        return x
-    from scipy.signal import resample_poly
+    """transcribe.cpp wants mono 16 kHz float32; moonshine-voice accepts any SR.
 
-    g = gcd(int(sr), TARGET_SR)
-    up, down = TARGET_SR // g, int(sr) // g
-    return np.ascontiguousarray(resample_poly(x, up, down), dtype=np.float32)
+    Box filter for integer downsampling (the common 48/32/8 kHz -> 16 kHz cases)
+    and linear interpolation otherwise, so there is no scipy dependency.
+    """
+    x = np.ascontiguousarray(samples, dtype=np.float32).reshape(-1)
+    if sr == TARGET_SR or sr <= 0 or x.size == 0:
+        return x
+    if sr % TARGET_SR == 0:
+        d = sr // TARGET_SR
+        n = x.size - (x.size % d)
+        if n:
+            return x[:n].reshape(-1, d).mean(axis=1).astype(np.float32)
+    n_out = max(1, int(round(x.size * TARGET_SR / sr)))
+    xi = np.linspace(0.0, x.size - 1, n_out)
+    return np.interp(xi, np.arange(x.size), x).astype(np.float32)
 
 
 class TranscribeCppSTT:

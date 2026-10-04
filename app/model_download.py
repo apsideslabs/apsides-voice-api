@@ -3,6 +3,9 @@
 Shared by `scripts/download_models.py` (CLI) and the app startup hook
 (`app.registry`). Nothing here writes into git — everything lands under
 MODEL_DIR, which is git-ignored and expected to be a persistent volume.
+
+Uses only the standard library (urllib) so there is no `huggingface_hub`
+dependency to install.
 """
 from __future__ import annotations
 
@@ -10,18 +13,18 @@ import json
 import logging
 import platform
 import shutil
-import sys
 import tarfile
 import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("apsides.voice.models")
 
+HF = "https://huggingface.co"
+
 # --- Kokoro TTS ------------------------------------------------------------
 KOKORO_REPO = "onnx-community/Kokoro-82M-v1.0-ONNX"
 KOKORO_MODEL_FILE = "onnx/model_q8f16.onnx"
 KOKORO_VOCAB_REPO = "hexgrad/Kokoro-82M"
-KOKORO_VOCAB_FILE = "config.json"
 
 # --- Moonshine STT via transcribe.cpp -------------------------------------
 TRANSCRIBE_GH = "https://github.com/handy-computer/transcribe.cpp/releases/download"
@@ -45,10 +48,10 @@ def _download(url: str, dest: Path, retries: int = 3) -> None:
     for attempt in range(1, retries + 1):
         try:
             logger.info("downloading %s (attempt %d/%d)", url, attempt, retries)
-            with urllib.request.urlopen(url, timeout=120) as resp, open(tmp, "wb") as fh:
+            with urllib.request.urlopen(url, timeout=180) as resp, open(tmp, "wb") as fh:
                 shutil.copyfileobj(resp, fh, length=1 << 20)
             tmp.replace(dest)
-            logger.info("saved %s (%.1f MB)", dest, dest.stat().st_size / 1e6)
+            logger.info("saved %s (%.1f MB)", dest.name, dest.stat().st_size / 1e6)
             return
         except Exception as exc:  # noqa: BLE001
             logger.warning("download failed (%s)", exc)
@@ -57,25 +60,31 @@ def _download(url: str, dest: Path, retries: int = 3) -> None:
             tmp.unlink(missing_ok=True)
 
 
+def _hf_list(repo: str) -> list:
+    url = f"{HF}/api/models/{repo}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        return [s["rfilename"] for s in json.load(resp).get("siblings", [])]
+
+
 # --------------------------------------------------------------------------
 def download_kokoro(model_dir: Path) -> None:
-    from huggingface_hub import hf_hub_download, snapshot_download
-
     kok = model_dir / "kokoro"
-    kok.mkdir(parents=True, exist_ok=True)
+    (kok / "onnx").mkdir(parents=True, exist_ok=True)
+    voices_dir = kok / "voices"
+    voices_dir.mkdir(parents=True, exist_ok=True)
 
-    logger.info("[tts] fetching %s", KOKORO_MODEL_FILE)
-    snapshot_download(
-        repo_id=KOKORO_REPO,
-        local_dir=str(kok),
-        allow_patterns=[KOKORO_MODEL_FILE, "voices/*.bin"],
-    )
+    logger.info("[tts] fetching model")
+    _download(f"{HF}/{KOKORO_REPO}/resolve/main/{KOKORO_MODEL_FILE}",
+              kok / "onnx" / "model_q8f16.onnx")
+
+    logger.info("[tts] fetching voices")
+    for fn in _hf_list(KOKORO_REPO):
+        if fn.startswith("voices/") and fn.endswith(".bin"):
+            _download(f"{HF}/{KOKORO_REPO}/resolve/main/{fn}", voices_dir / Path(fn).name)
 
     logger.info("[tts] fetching vocab")
-    cfg_path = hf_hub_download(
-        repo_id=KOKORO_VOCAB_REPO, filename=KOKORO_VOCAB_FILE, repo_type="model"
-    )
-    with open(cfg_path, "r", encoding="utf-8") as fh:
+    _download(f"{HF}/{KOKORO_VOCAB_REPO}/resolve/main/config.json", kok / "config.json")
+    with open(kok / "config.json", "r", encoding="utf-8") as fh:
         vocab = json.load(fh)["vocab"]
     with open(kok / "vocab.json", "w", encoding="utf-8") as fh:
         json.dump({"vocab": vocab}, fh)
@@ -83,6 +92,7 @@ def download_kokoro(model_dir: Path) -> None:
 
 
 def download_transcribe_native(model_dir: Path, version: str) -> None:
+    """Fallback only: pip's transcribe-cpp-native usually provides the .so."""
     machine = platform.machine()
     plat = _TRANSCRIBE_PLATFORM.get(machine)
     if plat is None:
@@ -95,9 +105,8 @@ def download_transcribe_native(model_dir: Path, version: str) -> None:
         return
 
     name = f"transcribe-native-{version}-{plat}-cpu-vulkan.tar.gz"
-    url = f"{TRANSCRIBE_GH}/v{version}/{name}"
     tgz = model_dir / name
-    _download(url, tgz)
+    _download(f"{TRANSCRIBE_GH}/v{version}/{name}", tgz)
 
     logger.info("[stt] extracting %s", tgz.name)
     tdir.mkdir(parents=True, exist_ok=True)
@@ -108,15 +117,12 @@ def download_transcribe_native(model_dir: Path, version: str) -> None:
 
 
 def download_gguf(model_dir: Path, filename: str = GGUF_FILE) -> Path:
-    from huggingface_hub import hf_hub_download
-
     dst = model_dir / "moonshine" / filename
     if dst.exists():
         logger.info("[stt] gguf already present -> %s", dst)
         return dst
-    logger.info("[stt] fetching %s:%s", GGUF_REPO, filename)
-    path = hf_hub_download(repo_id=GGUF_REPO, filename=filename, local_dir=str(dst.parent))
-    return Path(path)
+    _download(f"{HF}/{GGUF_REPO}/resolve/main/{filename}", dst)
+    return dst
 
 
 def download_moonshine_voice(arch: str = "small_streaming") -> None:
@@ -134,12 +140,7 @@ def download_moonshine_voice(arch: str = "small_streaming") -> None:
 
 # --------------------------------------------------------------------------
 def _transcribe_native_via_pip() -> bool:
-    """True when `transcribe-cpp-native` is installed (it bundles libtranscribe.so).
-
-    `pip install transcribe-cpp` pulls this in automatically, so the separate
-    GitHub native bundle is only a fallback for hosts where pip can't fetch the
-    platform wheel.
-    """
+    """True when `transcribe-cpp-native` is installed (it bundles libtranscribe.so)."""
     try:
         import transcribe_cpp_native  # noqa: F401
         return True
