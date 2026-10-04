@@ -6,8 +6,11 @@
 # --- Models (large; downloaded at deploy time) ---
 models/
 *.onnx
+*.gguf
 *.bin
 *.ort
+*.so
+transcribe-native-*
 
 # --- Python ---
 __pycache__/

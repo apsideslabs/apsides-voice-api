@@ -8,6 +8,7 @@ of small hosts (0.5-1.5 vCPU).
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import threading
@@ -23,6 +24,27 @@ logger = logging.getLogger("apsides.voice.tts")
 SAMPLE_RATE = 24000
 MAX_TOKENS = 510          # model context is 512 incl. pad tokens
 _CHUNK_CHAR_BUDGET = 300  # conservative split budget so phonemes stay < MAX_TOKENS
+
+
+class _EspeakG2P:
+    """Spacy-free grapheme-to-phoneme fallback.
+
+    `misaki.en` (the preferred, lexicon-based G2P) imports spacy, which pulls a
+    thinc/blis stack that can fail to build on some hosts. When it does, we fall
+    back to misaki's espeak-ng front-end, which needs no spacy and still emits
+    the IPA phonemes Kokoro expects. Slightly lower quality, but robust.
+    """
+
+    def __init__(self, british: bool) -> None:
+        from misaki import espeak
+
+        self._fb = espeak.EspeakFallback(british=british)
+
+    def __call__(self, text: str):
+        import types
+
+        phonemes, _ = self._fb(types.SimpleNamespace(text=text))
+        return (phonemes or "", None)
 
 
 class KokoroTTS:
@@ -59,6 +81,10 @@ class KokoroTTS:
         opts.intra_op_num_threads = self.num_threads
         opts.inter_op_num_threads = 1
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        # Trim peak memory so the ONNX session coexists with the STT runtime on
+        # 2 GB hosts (the memory arena can otherwise reserve a large block).
+        opts.enable_cpu_mem_arena = False
+        opts.enable_mem_pattern = False
         self._session = ort.InferenceSession(
             str(self.model_path), sess_options=opts, providers=["CPUExecutionProvider"]
         )
@@ -108,14 +134,36 @@ class KokoroTTS:
         accent = "b" if voice.startswith("b") else "a"
         if accent in self._g2p_cache:
             return self._g2p_cache[accent]
-        try:
-            from misaki import en, espeak
-        except Exception as exc:  # noqa: BLE001
-            raise ModelNotReadyError(
-                "English G2P is unavailable. Install `misaki[en]`."
-            ) from exc
         british = accent == "b"
-        g2p = en.G2P(trf=False, british=british, fallback=espeak.EspeakFallback(british=british))
+
+        g2p = None
+        # Prefer misaki's lexicon G2P, but only if spacy is actually installed
+        # (it is not, in the lightweight 2 GB deployment). Otherwise go straight
+        # to the spacy-free espeak-ng front-end.
+        if importlib.util.find_spec("spacy") is not None:
+            try:
+                from misaki import en, espeak
+
+                g2p = en.G2P(
+                    trf=False, british=british,
+                    fallback=espeak.EspeakFallback(british=british),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "misaki.en G2P unavailable (%s); using espeak-ng fallback", exc
+                )
+        else:
+            logger.info(
+                "spacy not installed; using espeak-ng G2P "
+                "(install `misaki[en]` on a larger host for higher quality)"
+            )
+        if g2p is None:
+            try:
+                g2p = _EspeakG2P(british)
+            except Exception as exc:  # noqa: BLE001
+                raise ModelNotReadyError(
+                    "English G2P is unavailable. Install `misaki[en]`."
+                ) from exc
         self._g2p_cache[accent] = g2p
         return g2p
 

@@ -3,16 +3,18 @@
 A reusable, production-oriented **HTTP AI voice backend** you can connect to any
 number of websites and platforms. One FastAPI service, two endpoints:
 
-| Endpoint | Model | Purpose |
+| Endpoint | Model | Runtime |
 | --- | --- | --- |
-| `POST /tts` | **Kokoro-82M** (ONNX `model_q8f16`, ~86 MB) | Text → speech |
-| `POST /stt` | **Moonshine Streaming Small** (q8, 123M, MIT) | English speech → text |
+| `POST /tts` | **Kokoro-82M** (ONNX `model_q8f16`, ~86 MB) | onnxruntime (CPU) |
+| `POST /stt` | **Moonshine Streaming Small Q8_0** (123M, ~189 MB GGUF) | transcribe.cpp (ggml CPU) |
 
 Everything runs **CPU-only**, so it fits small hosts (down to ~0.5–1.5 vCPU).
-Models are downloaded at deploy time and cached — **no model files live in git**.
+Models are downloaded at deploy time and cached — **no model binaries live in
+git**.
 
 - TTS model: <https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX>
-- STT project: <https://github.com/moonshine-ai/moonshine>
+- STT (GGUF): <https://huggingface.co/handy-computer/moonshine-streaming-small-gguf>
+- STT runtime: <https://github.com/handy-computer/transcribe.cpp>
 
 ---
 
@@ -20,23 +22,28 @@ Models are downloaded at deploy time and cached — **no model files live in git
 
 ```
 apsides-voice-api/
-├── main.py                     # app entrypoint (uvicorn main:app)
+├── main.py                       # app entrypoint (uvicorn main:app)
 ├── app/
-│   ├── config.py               # env-driven settings (no secrets in code)
-│   ├── schemas.py              # request/response validation
-│   ├── security.py             # optional X-API-Key auth
-│   ├── errors.py               # domain errors + handlers
-│   ├── audio.py                # decode (soundfile/ffmpeg) + encode (wav/mp3)
-│   ├── registry.py             # loads engines once, reports readiness
-│   ├── api.py                  # /tts, /stt, /health, /ready, /voices
+│   ├── config.py                 # env-driven settings (no secrets in code)
+│   ├── schemas.py                # request/response validation
+│   ├── security.py               # optional X-API-Key auth
+│   ├── errors.py                 # domain errors + handlers
+│   ├── audio.py                  # decode (soundfile/ffmpeg) + encode (wav/mp3)
+│   ├── model_download.py         # fetch + cache all model files
+│   ├── registry.py               # loads engines once, reports readiness
+│   ├── api.py                    # /tts, /stt, /health, /ready, /voices
 │   └── engines/
-│       ├── tts.py              # Kokoro ONNX engine
-│       └── stt.py              # Moonshine engine
-├── scripts/download_models.py  # fetch + cache models
+│       ├── tts.py                # Kokoro ONNX engine
+│       └── stt.py                # STT engines (transcribe_cpp | moonshine_voice)
+├── scripts/
+│   ├── download_models.py        # CLI: fetch + cache models
+│   └── verify_api.py             # end-to-end smoke test against a live API
 ├── requirements.txt
+├── requirements-moonshine.txt    # optional alternative STT backend
 ├── .env.example
-├── DEPLOYMENT.md
-└── start.sh
+├── start.sh                      # download-then-serve (Botkeep/Render/etc.)
+├── Procfile / runtime.txt
+└── DEPLOYMENT.md
 ```
 
 ---
@@ -49,14 +56,18 @@ cd apsides-voice-api
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
-# Download models into ./models (Kokoro ~86 MB + voices, Moonshine cache)
+# Download models into ./models (Kokoro ~114 MB + Moonshine GGUF ~189 MB)
 python scripts/download_models.py
 
 cp .env.example .env          # edit if you want an API key / CORS origins
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Open <http://localhost:8000/docs> for interactive API docs.
+Open <http://localhost:8000/docs>. Then verify both models:
+
+```bash
+python scripts/verify_api.py
+```
 
 > **ffmpeg (optional):** `soundfile` handles WAV/FLAC/OGG. To accept MP3/WebM
 > uploads (common from browsers' `MediaRecorder`) install `ffmpeg` on the host.
@@ -74,27 +85,20 @@ curl -s localhost:8000/health | jq
 {
   "status": "ok",
   "app": "apsides-voice-api",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "uptime_seconds": 42.1,
   "models": {
     "tts": { "enabled": true, "ready": true, "detail": null },
-    "stt": { "enabled": true, "ready": true, "detail": null }
+    "stt": { "enabled": true, "ready": true, "detail": null, "backend": "transcribe_cpp" }
   }
 }
 ```
 
-`GET /ready` returns **200** once at least one model is loaded, **503** otherwise —
-point your platform's readiness probe at it.
+`GET /ready` returns **200** once at least one model is loaded, **503** otherwise.
 
 ### `GET /voices` — list TTS voices
 
-```bash
-curl -s localhost:8000/voices | jq
-```
-
 ### `POST /tts` — text to speech
-
-Request (JSON), response is raw audio (`audio/wav` by default).
 
 ```bash
 curl -s -X POST localhost:8000/tts \
@@ -112,38 +116,26 @@ curl -s -X POST localhost:8000/tts \
 
 ### `POST /stt` — speech to text
 
-Multipart form upload. Field name is `file` (optional `language`).
-
 ```bash
-curl -s -X POST localhost:8000/stt \
-  -F 'file=@recording.wav' | jq
+curl -s -X POST localhost:8000/stt -F 'file=@recording.wav' | jq
 ```
 ```json
-{ "text": "hello from apsides", "language": "en", "duration_seconds": 2.31, "model": "moonshine-small_streaming" }
+{ "text": "hello from apsides", "language": "en", "duration_seconds": 2.31, "model": "moonshine-streaming-small-q8:transcribe_cpp" }
 ```
 
 ### Authentication (optional)
 
-Set `API_KEY` in the environment to require the header on `/tts` and `/stt`:
-
-```bash
-curl -s -X POST localhost:8000/tts -H "X-API-Key: $API_KEY" ...
-```
-
-If `API_KEY` is empty the API is open (fine for local dev; set it in production).
+Set `API_KEY` to require `X-API-Key` on `/tts` and `/stt`. Empty = open (dev).
 
 ---
 
 ## Connecting multiple frontends
 
-CORS is driven by `CORS_ORIGINS`. Set it to a comma-separated allow-list so any
-number of sites can call the API:
+Set `CORS_ORIGINS` to a comma-separated allow-list:
 
 ```
 CORS_ORIGINS=https://linguilo.app,https://jigyasa.example,https://luitra.example
 ```
-
-Example browser call:
 
 ```js
 const res = await fetch("https://your-api-host/tts", {
@@ -151,40 +143,46 @@ const res = await fetch("https://your-api-host/tts", {
   headers: { "Content-Type": "application/json", "X-API-Key": KEY },
   body: JSON.stringify({ text: "Namaste!", voice: "af_heart" }),
 });
-const url = URL.createObjectURL(await res.blob());
-new Audio(url).play();
+new Audio(URL.createObjectURL(await res.blob())).play();
 ```
 
 ---
 
 ## Configuration
 
-All settings are environment variables — see `.env.example` for the full list.
-Key ones:
+All settings are environment variables — see `.env.example`. Key ones:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `MODEL_DIR` | `./models` | Where models are cached (use a persistent volume) |
+| `AUTO_DOWNLOAD_MODELS` | `true` | Fetch missing models during startup |
 | `PORT` | `8000` | HTTP port (hosts inject `$PORT`) |
+| `STT_BACKEND` | `transcribe_cpp` | `transcribe_cpp` (GGUF q8_0) or `moonshine_voice` |
+| `TRANSCRIBE_VERSION` | `0.3.0` | Native bundle version — keep in sync with `transcribe-cpp` pin |
 | `CORS_ORIGINS` | `*` | Allowed origins (comma-separated) |
 | `API_KEY` | *(unset)* | If set, protects `/tts` and `/stt` |
 | `ONNX_NUM_THREADS` | `1` | Keep at 1 on small vCPU hosts |
 | `MAX_CONCURRENCY_TTS/STT` | `1` | Simultaneous inference jobs |
-| `STT_MODEL_ARCH` | `small_streaming` | tiny / tiny_streaming / base / small_streaming / medium_streaming |
 
 ---
 
 ## Design notes
 
 - **Resource-bounded:** single-threaded ONNX, a semaphore per endpoint, and
-  blocking inference pushed to a threadpool so the event loop stays responsive.
-- **Graceful degradation:** if a model is missing the API still boots; the other
-  endpoint keeps working and `/health` shows why.
-- **No secrets in the repo:** the API key is read from the environment only.
-- **Long text** is chunked by sentence so phoneme sequences stay inside the
-  model's 512-token context.
+  blocking inference pushed to a threadpool.
+- **Two STT backends:** `transcribe_cpp` runs the Q8_0 GGUF via the ggml CPU
+  runtime (default); `moonshine_voice` runs the `.ort` packaging of the same
+  model. Pick with `STT_BACKEND`.
+- **Graceful degradation:** a missing model never stops the API booting;
+  `/health` shows the reason.
+- **No secrets in the repo:** the API key comes from the environment only.
+- **No compiler needed:** the native runtime ships inside the
+  `transcribe-cpp-native` wheel that `pip install transcribe-cpp` pulls in.
+- **Fits a 2 GB host:** deps ~515 MB, models ~303 MB, peak RAM ~620 MB. English
+  G2P uses misaki's espeak-ng front-end — deliberately *not* `misaki[en]`, which
+  would drag in spacy + torch + CUDA wheels (~5.9 GB).
 
 ## License
 
-MIT — see [LICENSE](LICENSE). The Kokoro and Moonshine model weights carry their
-own licenses (Kokoro-82M: Apache-2.0; Moonshine: MIT).
+MIT — see [LICENSE](LICENSE). Model weights carry their own licenses
+(Kokoro-82M: Apache-2.0; Moonshine Streaming: MIT; transcribe.cpp: MIT).

@@ -8,14 +8,28 @@ pydantic-settings>=2.2
 # --- Numerics / audio ------------------------------------------------------
 numpy>=1.24
 soundfile>=0.12                  # WAV/FLAC/OGG decode + WAV encode (no binaries)
-scipy>=1.11                      # transitive/resample helpers
+scipy>=1.11                      # resampling for the 16 kHz STT front-end
 
 # --- TTS runtime (Kokoro-82M ONNX, CPU) ------------------------------------
-onnxruntime>=1.17                # CPU inference
-misaki[en]>=0.8                  # English grapheme-to-phoneme front-end
+# Pinned range: the Kokoro q8f16 graph uses ConvInteger, which older ORT
+# (1.19.x) rejects and some much newer builds crash on. 1.20-1.22 verified.
+onnxruntime>=1.20,<1.23          # CPU inference
 
-# --- STT runtime (Moonshine Streaming Small) -------------------------------
-moonshine-voice>=0.0.1           # provides `moonshine_voice`
+# Lightweight English G2P = misaki's espeak-ng front-end (no spacy, no torch).
+# DO NOT use `misaki[en]` here: it pulls spacy -> spacy-curated-transformers ->
+# torch + CUDA wheels (~5.9 GB installed), which does not fit a 2 GB host.
+# The TTS engine auto-uses misaki.en only if spacy happens to be installed.
+misaki>=0.8
+phonemizer-fork>=3.2
+espeakng-loader>=0.2
+num2words>=0.5
+
+# --- STT runtime (Moonshine Streaming Small Q8_0 via transcribe.cpp) --------
+# Pure-Python binding; the prebuilt native bundle (libtranscribe.so) is
+# downloaded by scripts/download_models.py — no compiler needed.
+# Pinned: the binding validates the native bundle's version + ABI hash, so keep
+# this in sync with TRANSCRIBE_VERSION (default 0.3.0).
+transcribe-cpp==0.3.0
 
 # --- Model downloads -------------------------------------------------------
 huggingface_hub>=0.20

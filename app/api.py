@@ -147,5 +147,5 @@ async def stt(file: UploadFile = File(...), language: str | None = Form(default=
         text=text,
         language=language or settings.stt_language,
         duration_seconds=duration,
-        model=f"moonshine-{settings.stt_model_arch}",
+        model=f"moonshine-streaming-small-q8:{getattr(registry.stt, 'name', 'unknown')}",
     )

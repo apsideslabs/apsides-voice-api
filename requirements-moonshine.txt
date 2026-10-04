@@ -1,0 +1,9 @@
+# OPTIONAL alternative STT backend.
+#
+# Only needed if you set STT_BACKEND=moonshine_voice (the .ort packaging of the
+# same Moonshine Streaming Small model). The default backend, transcribe_cpp,
+# does NOT use this. Installing both costs extra disk/RAM, so it is kept out of
+# requirements.txt on purpose.
+#
+#   pip install -r requirements-moonshine.txt
+moonshine-voice>=0.1.5

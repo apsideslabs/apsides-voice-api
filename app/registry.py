@@ -11,7 +11,7 @@ import time
 from typing import Dict, Optional
 
 from app.config import Settings
-from app.engines.stt import MoonshineSTT
+from app.engines.stt import build_stt
 from app.engines.tts import KokoroTTS
 
 logger = logging.getLogger("apsides.voice.registry")
@@ -20,13 +20,21 @@ logger = logging.getLogger("apsides.voice.registry")
 class Registry:
     def __init__(self) -> None:
         self.tts: Optional[KokoroTTS] = None
-        self.stt: Optional[MoonshineSTT] = None
+        self.stt = None
         self._states: Dict[str, dict] = {}
         self._started_at = time.time()
 
     # ------------------------------------------------------------------
     def load_all(self, settings: Settings) -> None:
         self._started_at = time.time()
+
+        if settings.auto_download_models:
+            try:
+                from app.model_download import ensure_models
+
+                ensure_models(settings, which="all")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("auto model download failed: %s", exc)
 
         if settings.tts_enabled:
             self.tts = KokoroTTS(
@@ -41,12 +49,9 @@ class Registry:
             self._states["tts"] = {"enabled": False, "ready": False, "detail": "disabled"}
 
         if settings.stt_enabled:
-            self.stt = MoonshineSTT(
-                language=settings.stt_language,
-                arch=settings.stt_model_arch,
-                model_dir=settings.stt_model_dir,
-            )
+            self.stt = build_stt(settings)
             self._states["stt"] = self._safe_load("stt", self.stt.load)
+            self._states["stt"]["backend"] = getattr(self.stt, "name", "unknown")
         else:
             self._states["stt"] = {"enabled": False, "ready": False, "detail": "disabled"}
 

@@ -34,7 +34,21 @@ class UnsupportedFormatError(VoiceError):
 
 
 class SynthesisError(VoiceError):
-    status_code = status.HTTP_422_UNPROCESSABLE_ENTITY
+    status_code = 422
+
+
+def _jsonable_errors(errors) -> list:
+    """Pydantic v2 puts the raw exception in `ctx`, which is not JSON-serialisable."""
+    cleaned = []
+    for err in errors:
+        err = dict(err)
+        ctx = err.get("ctx")
+        if isinstance(ctx, dict):
+            err["ctx"] = {
+                k: (str(v) if isinstance(v, BaseException) else v) for k, v in ctx.items()
+            }
+        cleaned.append(err)
+    return cleaned
 
 
 def register_exception_handlers(app: FastAPI) -> None:
@@ -48,8 +62,8 @@ def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def _validation_error(_: Request, exc: RequestValidationError):
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            content={"error": "ValidationError", "detail": exc.errors()},
+            status_code=422,
+            content={"error": "ValidationError", "detail": _jsonable_errors(exc.errors())},
         )
 
     @app.exception_handler(StarletteHTTPException)
