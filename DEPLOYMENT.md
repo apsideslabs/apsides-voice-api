@@ -1,45 +1,87 @@
-# Deployment
+<div align="center">
 
-The service is a standard ASGI app, so it runs on any Python host. This file
-answers the exact deployment questions for **Botkeep Founder Free**
-(2 GB RAM / 1.5 vCore / 2 GB storage), then lists portable alternatives.
+# Deployment Guide — Apsides Voice API
 
----
+**How to run the CPU-only voice backend on your own host — Docker, any Python PaaS/VPS, or a 2 GB free tier.**
 
-## Read this first: Botkeep is a *bot* host
+[![Back to README](https://img.shields.io/badge/←%20back%20to-README-555.svg)](README.md)
+[![Inference: CPU-only](https://img.shields.io/badge/inference-CPU--only-orange.svg)](README.md#resource-footprint)
+[![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg)](#1-docker-recommended)
 
-Botkeep (<https://botkeep.cloud/>) advertises **free hosting for Discord bots**
-(Node.js & Python). Its runtime is a long-lived bot process. Before relying on
-it for an **HTTP** API, confirm one thing with Botkeep support:
-
-> **Does Botkeep expose a public HTTP port / URL for a Python app?**
-
-Bots normally make *outbound* connections; if there is no inbound HTTP routing,
-this API will run but won't be reachable from your websites. The app itself is
-host-agnostic, so if the answer is no, use one of the alternatives at the end —
-no code changes needed.
-
-Everything below assumes a public port **is** provided and that `$PORT` is set.
+</div>
 
 ---
 
-## Exact Botkeep configuration
+## At a glance
 
-| Setting | Value |
-| --- | --- |
-| **Source** | Connect the GitHub repo `apsideslabs/apsides-voice-api` (or upload a ZIP) |
-| **Runtime** | Python |
-| **Python version** | whatever the host provides — **3.13 verified** (3.11/3.12 also work). `runtime.txt` is advisory; Pterodactyl/Botkeep uses its own image. |
-| **Install / build command** | `pip install -r requirements.txt` |
-| **Start command** | `bash start.sh` |
-| **Model download command** | `python scripts/download_models.py` (run automatically by `start.sh`) |
-| **Health check path** | `/health` (or `/ready` for readiness gating) |
+| Requirement | Value |
+| :--- | :--- |
+| **Runtime** | Python 3.11–3.13 (3.12 image provided) |
+| **Install command** | `pip install -r requirements.txt` |
+| **Start command** | `bash start.sh` (or `uvicorn main:app --host 0.0.0.0 --port $PORT`) |
+| **Health check** | `/health` (liveness) · `/ready` (readiness gate) |
+| **Public ingress** | **Required** — an inbound HTTP port with `$PORT` injected |
+| **Persistent storage** | **Recommended** — point `MODEL_DIR` at it (~303 MB of models) |
+| **System packages** | **None** required (ffmpeg optional, for MP3/WebM uploads) |
+| **RAM / CPU** | ~620 MB peak · 1–2 threads · fits a 2 GB / 1.5 vCPU host |
 
-`start.sh` does the whole sequence: download models if missing → locate
-`libtranscribe.so` and export `TRANSCRIBE_LIBRARY` → start uvicorn on `$PORT`.
+The app is a standard ASGI service, so it is **host-agnostic** — it only needs `$PORT` and a writable `MODEL_DIR`. It moves between the options below with **no code changes**.
 
-If Botkeep only lets you set a single start command, use this one line instead
-of `bash start.sh`:
+---
+
+## Table of Contents
+
+- [1. Docker (recommended)](#1-docker-recommended)
+- [2. Any Python host (PaaS / VPS)](#2-any-python-host-paas--vps)
+- [3. Host walkthrough: Botkeep Founder Free](#3-host-walkthrough-botkeep-founder-free)
+- [Model storage & persistence](#model-storage--persistence)
+- [Expected resource use](#expected-resource-use)
+- [Verify the deployment](#verify-the-deployment)
+- [Public API endpoints](#public-api-endpoints)
+- [Troubleshooting](#troubleshooting)
+- [Switching STT backend](#switching-stt-backend)
+- [Portable alternatives](#portable-alternatives)
+
+---
+
+## 1. Docker (recommended)
+
+```bash
+git clone https://github.com/apsideslabs/apsides-voice-api.git
+cd apsides-voice-api
+docker build -t apsides-voice-api .
+docker run -p 8000:8000 -v "$PWD/models:/app/models" apsides-voice-api
+```
+
+The provided `Dockerfile` is based on `python:3.12-slim`, installs `ffmpeg` + `libsndfile1` + `ca-certificates`, and downloads the models at build time so the image is self-contained. Mount a volume at `/app/models` to persist them across restarts.
+
+```mermaid
+flowchart LR
+    A["docker build"] --> B["image + models baked in"]
+    B --> C["docker run -p 8000:8000"]
+    C --> D["GET /health → models ready"]
+```
+
+---
+
+## 2. Any Python host (PaaS / VPS)
+
+```mermaid
+flowchart TD
+    S["Source: GitHub repo or ZIP"] --> I["pip install -r requirements.txt"]
+    I --> M["python scripts/download_models.py"]
+    M --> R["bash start.sh → uvicorn on $PORT"]
+    R --> H["GET /health"]
+```
+
+1. **Connect the repo** `apsideslabs/apsides-voice-api` (or upload a ZIP).
+2. **Runtime:** Python. **Python version:** whatever the host provides — 3.11/3.12/3.13 all work.
+3. **Install:** `pip install -r requirements.txt`
+4. **Start:** `bash start.sh`
+
+`start.sh` does the full sequence: download models if missing → locate `libtranscribe.so` and export `TRANSCRIBE_LIBRARY` → start uvicorn on `$PORT`.
+
+If your host allows only a single start command, use this one line instead of `bash start.sh`:
 
 ```bash
 python scripts/download_models.py && uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1
@@ -49,36 +91,48 @@ python scripts/download_models.py && uvicorn main:app --host 0.0.0.0 --port ${PO
 
 Only these matter; the rest have safe defaults (see `.env.example`).
 
-| Variable | Value for Botkeep | Why |
-| --- | --- | --- |
-| `MODEL_DIR` | a **persistent** path, e.g. `/data/models` (or leave default `./models` if the workspace persists) | Keeps ~365 MB of models from re-downloading every restart |
-| `PORT` | usually injected by the host | Bind port |
+| Variable | Value | Why |
+| :--- | :--- | :--- |
+| `MODEL_DIR` | a **persistent** path, e.g. `/data/models` | Keeps ~303 MB of models from re-downloading every restart |
+| `PORT` / `SERVER_PORT` | usually injected by the host | Bind port |
 | `STT_BACKEND` | `transcribe_cpp` (default) | Uses the Q8_0 GGUF |
-| `ONNX_NUM_THREADS` | `1` | 1.5 vCore — avoid CPU thrash |
-| `MAX_CONCURRENCY_TTS` / `_STT` | `1` | 2 GB RAM — one job at a time |
+| `ONNX_NUM_THREADS` | `1` | Avoid CPU thrash on small hosts |
+| `MAX_CONCURRENCY_TTS` / `_STT` | `1` | One job at a time on 2 GB RAM |
 | `CORS_ORIGINS` | your site origins, comma-separated | Lock down who can call it |
 | `API_KEY` | a secret you generate (`openssl rand -hex 32`) | Protect your compute |
 
-Set secrets in Botkeep's secret store — **never** commit them.
+Set secrets in the host's secret store — **never** commit them.
 
-### Required system dependencies
+### System dependencies
 
 **None.** The default backend needs no compiler and no system packages:
 
-- `pip install -r requirements.txt` pulls in `transcribe-cpp` **and**
-  `transcribe-cpp-native`, which bundles the prebuilt `libtranscribe.so` + ggml
-  CPU kernels. Verified: it loads and transcribes with only standard
-  glibc/libstdc++ present; the Vulkan module is optional and is not used.
-- **ffmpeg** is *optional* — install it only if you want to accept MP3/WebM
-  uploads. WAV/FLAC/OGG work with the bundled `soundfile` wheel.
-- English G2P is self-contained: **espeak-ng called directly via `ctypes`** (the
-  library + data ship inside the `espeakng-loader` wheel). **No `misaki`** (needs
-  Python <3.13; pulls spacy + torch) and **no `phonemizer-fork`** (it drags in
-  `segments` → `csvw` → rdflib/jsonschema/babel, which exhausted the host disk).
+- `pip install -r requirements.txt` pulls in `transcribe-cpp` **and** `transcribe-cpp-native`, which bundles the prebuilt `libtranscribe.so` + ggml CPU kernels. Verified to load with only standard `glibc`/`libstdc++` present; the Vulkan module is optional and unused.
+- **ffmpeg** is *optional* — install it only to accept MP3/WebM uploads. WAV/FLAC/OGG work with the bundled `soundfile` wheel.
+- English G2P is self-contained: **espeak-ng called directly via `ctypes`** (library + data ship in the `espeakng-loader` wheel). **No `misaki`** and **no `phonemizer-fork`**.
 
 ---
 
-## Where models are stored, and persistence
+## 3. Host walkthrough: Botkeep Founder Free
+
+> **Read this first.** Botkeep is a *bot* host — its runtime is a long-lived bot process. Before relying on it for an **HTTP** API, confirm with Botkeep support: **does it expose a public HTTP port / URL for a Python app?** Bots normally make *outbound* connections; if there is no inbound routing, the API runs but isn't reachable from your sites. The app is host-agnostic, so if the answer is no, use the [alternatives](#portable-alternatives) — no code changes needed.
+
+Assuming a public port is provided and `$PORT` is set:
+
+| Setting | Value |
+| :--- | :--- |
+| **Source** | Connect `apsideslabs/apsides-voice-api` (or upload a ZIP) |
+| **Runtime** | Python (3.13 verified; 3.11/3.12 also work) |
+| **Install / build** | `pip install -r requirements.txt` |
+| **Start** | `bash start.sh` |
+| **Model download** | `python scripts/download_models.py` (run automatically by `start.sh`) |
+| **Health check** | `/health` (or `/ready` for readiness gating) |
+
+Then set the [required environment variables](#required-environment-variables) in Botkeep's secret store.
+
+---
+
+## Model storage & persistence
 
 Everything lives under `MODEL_DIR` (default `./models`, git-ignored):
 
@@ -92,56 +146,37 @@ Everything lives under `MODEL_DIR` (default `./models`, git-ignored):
     └── moonshine-streaming-small-Q8_0.gguf      ~189 MB
 ```
 
-(The native `libtranscribe.so` is **not** here — it ships inside the
-`transcribe-cpp-native` pip package. `MODEL_DIR/transcribe/` only appears if the
-fallback GitHub bundle was downloaded on a host where pip couldn't fetch the
-platform wheel.)
+The native `libtranscribe.so` is **not** here — it ships inside the `transcribe-cpp-native` pip package. `MODEL_DIR/transcribe/` only appears if the fallback GitHub bundle was downloaded where pip couldn't fetch the platform wheel.
 
-**Persistence:** whether these survive a restart/redeploy depends entirely on
-whether Botkeep gives you a persistent volume. If `MODEL_DIR` is on ephemeral
-disk, they are re-downloaded on each cold start (`start.sh` handles that
-automatically, but it costs a few minutes of bandwidth each time). If Botkeep
-offers persistent storage, point `MODEL_DIR` at it and the download happens
-once. **Confirm which applies to your plan.**
+**Persistence:** whether these survive a restart/redeploy depends on whether your host gives you a persistent volume. If `MODEL_DIR` is on ephemeral disk, models re-download on each cold start (`start.sh` handles it automatically, but it costs bandwidth). Point `MODEL_DIR` at persistent storage and the download happens once.
 
 ---
 
 ## Expected resource use
 
-| Resource | Estimate | Against Botkeep Founder Free |
-| --- | --- | --- |
-| Model files on disk | ~303 MB (Kokoro ~114 + GGUF ~189) | ✅ within 2 GB |
-| Python deps installed | ~308 MB (measured; sympy + transcribe-cpp-native + onnxruntime + numpy dominate) | ✅ |
-| **Storage total** | **~0.6 GB** (308 MB deps + ~303 MB models), plus ~150 MB of pip download cache during install | ⚠️ needs ~1 GB free |
-| **RAM at runtime** | **~620 MB measured** peak RSS, both models loaded *and* run | ✅ within 2 GB |
-| CPU | 1–2 threads | ✅ within 1.5 vCore |
+| Resource | Estimate | Fits 2 GB / 1.5 vCPU? |
+| :--- | :--- | :---: |
+| Model files on disk | ~303 MB (Kokoro ~114 + GGUF ~189) | ✅ |
+| Python deps installed | ~308 MB (sympy + transcribe-cpp-native + onnxruntime + numpy dominate) | ✅ |
+| **Storage total** | **~0.6 GB** (+ ~150 MB pip download cache during install) | ⚠️ needs ~1 GB free |
+| **RAM at runtime** | **~620 MB** peak RSS (both models loaded & run) | ✅ |
+| CPU | 1–2 threads | ✅ |
 
-Notes: numbers are estimates from the verified file sizes; actual Python-dep
-size varies with wheel versions. If you are tight on RAM, run only one model
-(set `TTS_ENABLED=false` or `STT_ENABLED=false`) or use the smaller
-`moonshine-streaming-tiny` GGUF (48 MB).
+If RAM is tight, run only one engine (`TTS_ENABLED=false` or `STT_ENABLED=false`) or switch the STT model to `moonshine-streaming-tiny` (48 MB GGUF).
 
-**Performance (measured on a throttled dev pod):** Moonshine Streaming Small
-Q8_0 transcribed 11 s of speech in ~13 s, and Kokoro synthesized a 3.2 s phrase
-in ~12 s. Both are slower than realtime *here* because the pod CPU is heavily
-throttled; a normal CPU is several times faster. Keep `MAX_CONCURRENCY_*=1` and
-cap request sizes; raise `ONNX_NUM_THREADS` on hosts with more vCPU.
-
-**Memory note:** the ONNX session runs with `enable_cpu_mem_arena=False` so it
-coexists with the STT runtime on 2 GB. Without that, running STT while Kokoro is
-resident can OOM.
+**Memory note:** the ONNX session runs with `enable_cpu_mem_arena=False` so it coexists with the STT runtime on 2 GB. Without that, running STT while Kokoro is resident can OOM.
 
 ---
 
-## Verify both models are loaded and working
+## Verify the deployment
 
 **1. Readiness** — `/health` reports per-model state:
 
 ```bash
 curl -s https://YOUR-APP/health | jq '.models'
 ```
-Both `tts` and `stt` should show `"ready": true`. If not, `detail` names the
-cause (e.g. a failed download or a missing `libtranscribe.so`).
+
+Both `tts` and `stt` should show `"ready": true`. If not, `detail` names the cause (e.g. a failed download or a missing `libtranscribe.so`).
 
 **2. Full round trip** — synthesize audio, then transcribe it back:
 
@@ -151,23 +186,20 @@ python scripts/verify_api.py --base https://YOUR-APP
 API_KEY=xxxx python scripts/verify_api.py --base https://YOUR-APP
 ```
 
-Expected: `health` shows both ready, `tts: OK` with a byte count, and `stt`
-returns the spoken text — ending with `RESULT: PASS`.
+Expected: `health` shows both ready, `tts: OK` with a byte count, and `stt` returns the spoken text — ending with `RESULT: PASS`.
 
 ---
 
-## Final public API endpoints
+## Public API endpoints
 
 | Method | Path | Body | Returns |
-| --- | --- | --- | --- |
+| :--- | :--- | :--- | :--- |
 | `POST` | `/tts` | JSON `{text, voice?, speed?, format?}` | `audio/wav` (or `audio/mpeg`) |
 | `POST` | `/stt` | multipart `file=<audio>` (+ optional `language`) | JSON `{text, language, duration_seconds, model}` |
 | `GET` | `/health` | — | liveness + per-model state |
-| `GET` | `/ready` | — | 200/503 readiness |
+| `GET` | `/ready` | — | 200 / 503 readiness |
 | `GET` | `/voices` | — | available TTS voices |
 | `GET` | `/docs` | — | interactive OpenAPI docs |
-
-Another website calls them like this:
 
 ```js
 // Text → speech
@@ -192,46 +224,19 @@ Remember to add your site's origin to `CORS_ORIGINS`.
 
 ## Troubleshooting
 
-**`ERROR: No matching distribution found for misaki>=0.8`** — this is what
-broke install on Python 3.13: misaki requires Python <3.13. The requirements no
-longer include misaki at all. If you see this, you are deploying an older
-revision — make sure the latest `requirements.txt` is what gets installed.
-
-**`OSError: [Errno 28] No space left on device`** — pip ran out of disk. The
-slim requirements install to ~308 MB, but pip also downloads ~150 MB of wheels
-first, and the models add ~303 MB. Check the plan's disk allocation and clear
-any stale pip cache on the server. If it is still tight: set
-`STT_ENABLED=false` (drops ~61 MB of native libs + the 189 MB GGUF), or switch
-the STT model to `moonshine-streaming-tiny` (48 MB GGUF).
-
-**Install succeeds but the app crashes on start** — check the log for the last
-Python traceback. `main.py` is the entrypoint; the models download on first boot.
-
-**`/health` shows a model `ready: false`** — the `detail` field names the cause
-(usually a failed download). Verify outbound network access and that `MODEL_DIR`
-is writable.
-
-**Port** — the app binds `SERVER_PORT` if set, else `PORT`, else `8000`. If the
-host reports a different allocation, set `SERVER_PORT` to match.
-
-## Portable alternatives (if Botkeep has no HTTP ingress)
-
-| Host | Free? | Card? | Notes |
-| --- | --- | --- | --- |
-| Hugging Face Spaces (Docker) | CPU Basic needs a paid plan now; Static is free | no | Not ideal for this CPU service |
-| Render (free web service) | 512 MB / 0.1 vCPU | no | Tight RAM — run one model only |
-| A small VPS (student credits) | varies | varies | Most reliable persistent public URL |
-| Docker anywhere | — | — | `docker build -t apsides-voice-api . && docker run -p 8000:8000 -v $PWD/models:/app/models apsides-voice-api` |
-
-Because the app only needs `$PORT` and a writable `MODEL_DIR`, it moves between
-these with no code changes.
+| Symptom | Cause & fix |
+| :--- | :--- |
+| `No matching distribution found for misaki>=0.8` | Deploying an older revision. Current `requirements.txt` no longer includes `misaki` (needs Python <3.13). |
+| `OSError: [Errno 28] No space left on device` | pip ran out of disk. Free space, clear stale pip cache, or set `STT_ENABLED=false` / use the tiny GGUF. |
+| Install succeeds but app crashes on start | Check the last Python traceback; `main.py` is the entrypoint. Models download on first boot. |
+| `/health` shows `ready: false` | `detail` names the cause (usually a failed download). Verify outbound network access and that `MODEL_DIR` is writable. |
+| Wrong port | The app binds `SERVER_PORT` → `PORT` → `8000`. Set `SERVER_PORT` to match your host. |
 
 ---
 
 ## Switching STT backend
 
-The default `transcribe_cpp` runs the **Q8_0 GGUF**. To use the `.ort`
-packaging of the same model instead:
+The default `transcribe_cpp` runs the **Q8_0 GGUF**. To use the `.ort` packaging of the same model instead:
 
 ```bash
 pip install -r requirements-moonshine.txt
@@ -239,5 +244,27 @@ export STT_BACKEND=moonshine_voice
 python scripts/download_models.py --stt
 ```
 
-Both are the same upstream Moonshine Streaming Small model; only the runtime
-packaging differs.
+Both are the same upstream Moonshine Streaming Small model; only the runtime packaging differs.
+
+---
+
+## Portable alternatives
+
+| Host | Free? | Card? | Notes |
+| :--- | :--- | :--- | :--- |
+| **Docker anywhere** | — | — | Most reliable; full control of volume + port |
+| Small VPS (student credits) | varies | varies | Persistent public URL |
+| Render (free web service) | 512 MB / 0.1 vCPU | no | Tight RAM — run one model only |
+| Hugging Face Spaces (Docker) | CPU Basic needs a paid plan | no | Not ideal for this CPU service |
+
+Because the app only needs `$PORT` and a writable `MODEL_DIR`, it moves between these with **no code changes**.
+
+---
+
+<div align="center">
+
+Part of **Apsides Voice API** — see the [README](README.md) for the full overview.
+
+Built by **Apsides Labs** — technology, products and research built with precision.
+
+</div>
