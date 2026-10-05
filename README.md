@@ -41,6 +41,7 @@ It fits a **~2 GB RAM / 1.5 vCPU** host with **~620 MB peak RAM**, models are do
 - [API Reference](#api-reference)
 - [Configuration](#configuration)
 - [Models](#models)
+- [Credits & attribution](#credits--attribution)
 - [Resource Footprint](#resource-footprint)
 - [Deployment](#deployment)
 - [Project Structure](#project-structure)
@@ -319,6 +320,22 @@ apsides-voice-api/
 ## Contributing
 
 Issues and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
+
+---
+
+## Credits & attribution
+
+Apsides Voice API is the **service around** these models — we did not train them. All credit for the models and runtimes belongs to their creators:
+
+| Component | Built by | License |
+| :--- | :--- | :--- |
+| Kokoro-82M (TTS) | **hexgrad** | Apache-2.0 |
+| Kokoro ONNX packaging | **onnx-community** | Apache-2.0 |
+| Moonshine Streaming Small (STT) | **Useful Sensors** (Moonshine) | MIT |
+| Moonshine GGUF + transcribe.cpp | **handy-computer** | MIT |
+| onnxruntime | **Microsoft** | MIT |
+
+Our contribution is the FastAPI service, the CPU-only resource tuning, the deployment tooling and this documentation. Thanks to the maintainers above — this project would not exist without their work.
 
 ---
 
